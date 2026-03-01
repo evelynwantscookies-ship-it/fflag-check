@@ -1,0 +1,38 @@
+[package]
+name = "fflag-check"
+version = "0.1.0"
+description = "TSBCC FFlag Scanner"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+name = "fflag_check_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sysinfo = "0.33"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
+glob = "0.3"
+walkdir = "2"
+tokio = { version = "1", features = ["full"] }
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = [
+    "processthreadsapi", "memoryapi", "handleapi",
+    "tlhelp32", "winnt", "psapi", "securitybaseapi",
+    "wow64apiset", "errhandlingapi"
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+mach2 = "0.4"
