@@ -4,7 +4,6 @@ mod accounts;
 mod commands;
 pub mod data;
 pub mod models;
-pub mod repair;
 #[cfg(feature = "ui")]
 mod reports;
 pub mod scanners;
@@ -26,7 +25,6 @@ pub fn run() {
             commands::validate_report,
             commands::import_report,
             commands::open_finding_folder,
-            commands::repair_client_settings,
             commands::cancel_scan,
             accounts::verified_accounts,
             accounts::clear_verified_accounts,

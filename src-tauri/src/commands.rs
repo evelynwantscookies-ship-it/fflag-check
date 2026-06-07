@@ -4,7 +4,6 @@ use std::process::Command;
 
 use crate::accounts::{account_inventory, account_inventory_findings, AccountStore};
 use crate::models::{ScanFinding, ScanReport};
-use crate::repair::{repair_client_settings_file, ClientSettingsRepairResult};
 use crate::reports::report_generator;
 use crate::scanners;
 use crate::scanners::progress::{CancelToken, ScanProgress};
@@ -138,16 +137,6 @@ pub async fn open_finding_folder(path: String) -> Result<(), String> {
     }
 }
 
-/// Repair a structured FFlag settings file by backing it up, removing unsafe
-/// non-allowlisted overrides, rewriting it, and verifying the repaired JSON.
-/// Only known FFlag config filenames are accepted; tool binaries, prefetch
-/// history, process hits, and arbitrary JSON stay manual-review only.
-#[tauri::command]
-pub async fn repair_client_settings(path: String) -> Result<ClientSettingsRepairResult, String> {
-    let resolved = resolve_redacted_user_path(path.trim())?;
-    repair_client_settings_file(&resolved).map_err(|e| e.to_string())
-}
-
 #[derive(Debug, PartialEq, Eq)]
 enum FindingPathAction {
     RevealItem(PathBuf),
@@ -161,7 +150,7 @@ fn finding_path_action(path: &Path) -> Result<FindingPathAction, String> {
     if path.is_dir() {
         return Ok(FindingPathAction::OpenFolder(path.to_path_buf()));
     }
-    if let Some(parent) = path.parent().filter(|p| p.is_dir()) {
+    if let Some(parent) = path.parent().filter(|p| p.exists()) {
         return Ok(FindingPathAction::OpenFolder(parent.to_path_buf()));
     }
     Err(format!(
@@ -229,7 +218,6 @@ fn open_folder(path: &Path) -> Result<(), String> {
 #[cfg(target_os = "macos")]
 fn open_folder(path: &Path) -> Result<(), String> {
     Command::new("open")
-        .arg("--")
         .arg(path)
         .spawn()
         .map_err(|e| format!("Could not open folder: {}", e))?;
@@ -308,18 +296,6 @@ mod tests {
 
         let err = finding_path_action(&missing_file).unwrap_err();
         assert!(err.contains("Path and parent folder do not exist"));
-    }
-
-    #[test]
-    fn finding_path_action_errors_when_parent_is_not_a_directory() {
-        let dir = tmpdir();
-        let parent_file = dir.join("not-a-folder");
-        std::fs::write(&parent_file, "file").unwrap();
-        let missing_file = parent_file.join("fflags.json");
-
-        let err = finding_path_action(&missing_file).unwrap_err();
-        assert!(err.contains("Path and parent folder do not exist"));
-        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

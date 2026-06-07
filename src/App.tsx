@@ -45,33 +45,6 @@ type FieldAction = {
   title: string;
 };
 
-type ClientSettingsRepairResult = {
-  changed: boolean;
-  removed_flags: string[];
-  reset_settings: string[];
-  backup_path: string | null;
-};
-
-type RepairKind = "auto" | "manual" | "diagnostic";
-
-export type RepairPlanItem = {
-  id: string;
-  kind: RepairKind;
-  verdict: ScanVerdict;
-  module: string;
-  title: string;
-  detail: string;
-  evidencePath: string | null;
-  flags: string[];
-  findingCount: number;
-};
-
-type RepairActionStatus = "running" | "success" | "error";
-type RepairActionState = {
-  status: RepairActionStatus;
-  message: string;
-};
-
 export function emptyProgress(): ProgressMap {
   return Object.fromEntries(
     SCANNERS.map((s) => [s.id, { state: "pending" as const }]),
@@ -90,23 +63,6 @@ export function hasTauriRuntime(): boolean {
     typeof (window as unknown as { __TAURI_INTERNALS__?: unknown })
       .__TAURI_INTERNALS__ !== "undefined"
   );
-}
-
-export function errorMessage(err: unknown): string {
-  if (err instanceof Error && err.message) return err.message;
-  if (typeof err === "string") return err;
-  if (err && typeof err === "object") {
-    const maybeMessage = (err as { message?: unknown }).message;
-    if (typeof maybeMessage === "string" && maybeMessage.trim()) {
-      return maybeMessage;
-    }
-    try {
-      return JSON.stringify(err);
-    } catch {
-      return String(err);
-    }
-  }
-  return String(err);
 }
 
 // Stable per-finding identity so open-state and React keys track the
@@ -176,7 +132,6 @@ function AppInner() {
   const [importMeta, setImportMeta] = useState<ImportMeta | null>(null);
   const [theme, setTheme] = useState<Theme>(() => readInitialTheme());
   const [accounts, setAccounts] = useState<AccountIdentity[]>([]);
-  const [repairStates, setRepairStates] = useState<Record<string, RepairActionState>>({});
   const scanInFlight = useRef(false);
 
   // Apply theme to the root element so global CSS variables can switch
@@ -226,7 +181,7 @@ function AppInner() {
       setAccounts([]);
       setToast({ msg: "Cleared accounts for this Prism session.", kind: "info" });
     } catch (err) {
-      setToast({ msg: `Could not clear accounts: ${errorMessage(err)}`, kind: "error" });
+      setToast({ msg: `Could not clear accounts: ${String(err)}`, kind: "error" });
     }
   }, []);
 
@@ -294,10 +249,6 @@ function AppInner() {
     setOpenKey(null);
   }, [filter, evidenceFilter]);
 
-  useEffect(() => {
-    setRepairStates({});
-  }, [report?.scan_id]);
-
   const runScan = useCallback(async () => {
     if (scanInFlight.current) return;
     if (!hasTauriRuntime()) {
@@ -326,7 +277,7 @@ function AppInner() {
       // final scan without needing a separate Tauri call from the UI.
       void refreshAccounts();
     } catch (err) {
-      setToast({ msg: `Scan failed: ${errorMessage(err)}`, kind: "error" });
+      setToast({ msg: `Scan failed: ${String(err)}`, kind: "error" });
       setPhase("idle");
     } finally {
       scanInFlight.current = false;
@@ -346,7 +297,7 @@ function AppInner() {
       await invoke("cancel_scan");
       setToast({ msg: "Stopping scan…", kind: "info" });
     } catch (err) {
-      setToast({ msg: `Stop failed: ${errorMessage(err)}`, kind: "error" });
+      setToast({ msg: `Stop failed: ${String(err)}`, kind: "error" });
       setStopInFlight(false);
     }
   }, [stopInFlight]);
@@ -395,7 +346,7 @@ function AppInner() {
         kind: payload.signature_valid && !payload.stale ? "success" : "info",
       });
     } catch (err) {
-      setToast({ msg: `Import failed: ${errorMessage(err)}`, kind: "error" });
+      setToast({ msg: `Import failed: ${String(err)}`, kind: "error" });
     } finally {
       setImportInFlight(false);
     }
@@ -435,7 +386,7 @@ function AppInner() {
       const path = await invoke<string>("save_report", { path: chosenPath });
       setToast({ msg: `Report saved → ${path}`, kind: "success" });
     } catch (err) {
-      setToast({ msg: `Export failed: ${errorMessage(err)}`, kind: "error" });
+      setToast({ msg: `Export failed: ${String(err)}`, kind: "error" });
     } finally {
       setExportInFlight(false);
     }
@@ -497,80 +448,6 @@ function AppInner() {
   }, [report, filter, evidenceFilter]);
 
   const showAccountInventory = shouldShowAccountInventory(phase, report, importMeta);
-  const repairItems = useMemo(
-    () => (report ? buildRepairPlan(report.findings) : []),
-    [report],
-  );
-
-  const revealEvidencePath = useCallback(
-    async (path: string) => {
-      if (!hasTauriRuntime()) {
-        setToast({ msg: "Tauri runtime not detected — cannot reveal evidence.", kind: "error" });
-        return;
-      }
-      try {
-        await openFindingFolder(path);
-      } catch (err) {
-        setToast({ msg: `Could not reveal evidence: ${errorMessage(err)}`, kind: "error" });
-      }
-    },
-    [],
-  );
-
-  const repairClientSettings = useCallback(
-    async (item: RepairPlanItem) => {
-      if (item.kind !== "auto" || !item.evidencePath) return;
-      if (!hasTauriRuntime()) {
-        const message = "Tauri runtime not detected — cannot repair this file.";
-        setRepairStates((prev) => ({
-          ...prev,
-          [item.id]: { status: "error", message },
-        }));
-        setToast({ msg: message, kind: "error" });
-        return;
-      }
-      setRepairStates((prev) => ({
-        ...prev,
-        [item.id]: { status: "running", message: "Repairing…" },
-      }));
-      try {
-        const result = await invoke<ClientSettingsRepairResult>(
-          "repair_client_settings",
-          { path: item.evidencePath },
-        );
-        const changedSummary = repairResultSummary(result);
-        const message = result.changed
-          ? `${changedSummary}. Rescan to verify the repaired state.`
-          : "No unsafe overrides remain in this file. Rescan if the finding is stale.";
-        setRepairStates((prev) => ({
-          ...prev,
-          [item.id]: { status: "success", message },
-        }));
-        setToast({
-          msg: result.changed ? "Repair complete — rescan to verify." : "No repair was needed.",
-          kind: result.changed ? "success" : "info",
-        });
-      } catch (err) {
-        const message = errorMessage(err);
-        setRepairStates((prev) => ({
-          ...prev,
-          [item.id]: { status: "error", message },
-        }));
-        setToast({ msg: `Repair failed: ${message}`, kind: "error" });
-      }
-    },
-    [],
-  );
-
-  const copyRepairPlan = useCallback(async () => {
-    const text = formatRepairPlanText(repairItems);
-    try {
-      await navigator.clipboard.writeText(text);
-      setToast({ msg: "Repair plan copied.", kind: "success" });
-    } catch (err) {
-      setToast({ msg: `Could not copy repair plan: ${errorMessage(err)}`, kind: "error" });
-    }
-  }, [repairItems]);
 
   return (
     <div className="app">
@@ -608,16 +485,6 @@ function AppInner() {
           onClear={clearAccounts}
         />
       )}
-      {phase === "complete" && report && (
-        <RepairCenter
-          items={repairItems}
-          disabled={!tauriReady}
-          states={repairStates}
-          onRepair={repairClientSettings}
-          onReveal={revealEvidencePath}
-          onCopyPlan={copyRepairPlan}
-        />
-      )}
       <Workarea
         phase={phase}
         findings={ordered}
@@ -630,215 +497,11 @@ function AppInner() {
         onScan={runScan}
         counts={counts}
         surfaceCounts={surfaceCounts}
-        onToast={setToast}
       />
       <StatusBar phase={phase} report={report} />
       {toast && <div className={`toast toast--${toast.kind}`}>{toast.msg}</div>}
     </div>
   );
-}
-
-/* ——————————————————————————————————————————————————————————— */
-
-export function buildRepairPlan(findings: ScanFinding[]): RepairPlanItem[] {
-  const items = new Map<string, RepairPlanItem>();
-  for (const finding of findings) {
-    if (finding.verdict === "Clean") continue;
-
-    const action = pathFieldAction(finding);
-    const flag = extractFindingFlagName(finding.description);
-    if (
-      finding.module === "client_settings_scanner" &&
-      action &&
-      (finding.verdict === "Flagged" || finding.verdict === "Suspicious")
-    ) {
-      const key = `auto|${action.path}`;
-      const item = getOrCreateRepairItem(items, key, {
-        id: key,
-        kind: "auto",
-        verdict: finding.verdict,
-        module: finding.module,
-        title: "Repair FFlag settings",
-        detail: "",
-        evidencePath: action.path,
-        flags: [],
-        findingCount: 0,
-      });
-      mergeRepairFinding(item, finding, flag);
-      continue;
-    }
-
-    const kind: RepairKind =
-      finding.verdict === "Inconclusive" ||
-      finding.module === "prefetch_scanner" ||
-      finding.module === "scanner_runtime"
-        ? "diagnostic"
-        : "manual";
-    const key = `${kind}|${finding.module}|${action?.path ?? finding.description}`;
-    const item = getOrCreateRepairItem(items, key, {
-      id: key,
-      kind,
-      verdict: finding.verdict,
-      module: finding.module,
-      title: repairTitleForFinding(finding),
-      detail: repairDetailForFinding(finding, action?.path ?? null),
-      evidencePath: action?.path ?? null,
-      flags: [],
-      findingCount: 0,
-    });
-    mergeRepairFinding(item, finding, flag);
-  }
-
-  const plan = [...items.values()].map(finalizeRepairItem);
-  const verdictRank: Record<ScanVerdict, number> = {
-    Flagged: 0,
-    Suspicious: 1,
-    Inconclusive: 2,
-    Clean: 3,
-  };
-  const kindRank: Record<RepairKind, number> = {
-    auto: 0,
-    manual: 1,
-    diagnostic: 2,
-  };
-  return plan.sort(
-    (a, b) =>
-      verdictRank[a.verdict] - verdictRank[b.verdict] ||
-      kindRank[a.kind] - kindRank[b.kind] ||
-      a.title.localeCompare(b.title),
-  );
-}
-
-function getOrCreateRepairItem(
-  items: Map<string, RepairPlanItem>,
-  key: string,
-  initial: RepairPlanItem,
-): RepairPlanItem {
-  const existing = items.get(key);
-  if (existing) return existing;
-  items.set(key, initial);
-  return initial;
-}
-
-function mergeRepairFinding(
-  item: RepairPlanItem,
-  finding: ScanFinding,
-  flag: string | null,
-) {
-  item.findingCount += 1;
-  if (flag && !item.flags.includes(flag)) item.flags.push(flag);
-  if (finding.verdict === "Flagged") item.verdict = "Flagged";
-  else if (finding.verdict === "Suspicious" && item.verdict !== "Flagged") {
-    item.verdict = "Suspicious";
-  } else if (
-    finding.verdict === "Inconclusive" &&
-    item.verdict !== "Flagged" &&
-    item.verdict !== "Suspicious"
-  ) {
-    item.verdict = "Inconclusive";
-  }
-}
-
-function finalizeRepairItem(item: RepairPlanItem): RepairPlanItem {
-  const flags = [...item.flags].sort();
-  if (item.kind !== "auto" || !item.evidencePath) {
-    return { ...item, flags };
-  }
-  const flagSummary =
-    flags.length === 0
-      ? "non-allowlisted overrides"
-      : `${flags.length} override${flags.length === 1 ? "" : "s"} (${previewList(flags)})`;
-  return {
-    ...item,
-    flags,
-    detail: `Back up and clean ${flagSummary} in ${item.evidencePath}.`,
-  };
-}
-
-function repairTitleForFinding(finding: ScanFinding): string {
-  if (finding.verdict === "Inconclusive") return "Restore scanner coverage";
-  switch (finding.module) {
-    case "process_scanner":
-      return "Stop flagged runtime tool";
-    case "file_scanner":
-      return "Review suspected tool file";
-    case "prefetch_scanner":
-      return "Review execution history";
-    case "account_inventory":
-      return "Review account inventory";
-    default:
-      return "Manual review required";
-  }
-}
-
-function repairDetailForFinding(
-  finding: ScanFinding,
-  evidencePath: string | null,
-): string {
-  if (finding.verdict === "Inconclusive") {
-    return evidencePath
-      ? `Scanner coverage failed for ${evidencePath}; fix access or file state and rescan.`
-      : "Scanner coverage failed; fix the reported environment issue and rescan.";
-  }
-  switch (finding.module) {
-    case "process_scanner":
-      return "Close the flagged process, remove its launcher if needed, then rescan.";
-    case "file_scanner":
-      return evidencePath
-        ? `Review ${evidencePath} with staff before deleting or moving it.`
-        : "Review the suspected artifact with staff before deleting or moving it.";
-    case "prefetch_scanner":
-      return "Prefetch evidence is historical; verify context with staff instead of clearing OS history.";
-    case "account_inventory":
-      return "Confirm logged-in accounts with staff and rerun after signing out if needed.";
-    default:
-      return finding.description;
-  }
-}
-
-function previewList(values: string[]): string {
-  const head = values.slice(0, 3).join(", ");
-  return values.length > 3 ? `${head}, +${values.length - 3}` : head;
-}
-
-export function extractFindingFlagName(description: string): string | null {
-  return description.match(/"([^"]+)"/)?.[1] ?? null;
-}
-
-export function repairResultSummary(result: ClientSettingsRepairResult): string {
-  const parts: string[] = [];
-  if (result.removed_flags.length) {
-    parts.push(
-      `${result.removed_flags.length} flag${result.removed_flags.length === 1 ? "" : "s"} removed`,
-    );
-  }
-  if (result.reset_settings.length) {
-    parts.push(
-      `${result.reset_settings.length} setting${result.reset_settings.length === 1 ? "" : "s"} reset`,
-    );
-  }
-  if (result.backup_path) {
-    parts.push(`backup: ${result.backup_path}`);
-  }
-  return parts.length ? parts.join("; ") : "No changes made";
-}
-
-export function formatRepairPlanText(items: RepairPlanItem[]): string {
-  if (items.length === 0) return "Prism repair plan\nNo repair actions needed.";
-  return [
-    "Prism repair plan",
-    ...items.map((item, index) => {
-      const mode =
-        item.kind === "auto"
-          ? "auto-repairable"
-          : item.kind === "manual"
-            ? "manual"
-            : "diagnostic";
-      const flags = item.flags.length ? `\n   Flags: ${item.flags.join(", ")}` : "";
-      const path = item.evidencePath ? `\n   Evidence: ${item.evidencePath}` : "";
-      return `${index + 1}. [${item.verdict} / ${mode}] ${item.title}\n   ${item.detail}${flags}${path}`;
-    }),
-  ].join("\n");
 }
 
 /* ——————————————————————————————————————————————————————————— */
@@ -1102,108 +765,6 @@ function AccountInventory({
 
 /* ——————————————————————————————————————————————————————————— */
 
-function RepairCenter({
-  items,
-  disabled,
-  states,
-  onRepair,
-  onReveal,
-  onCopyPlan,
-}: {
-  items: RepairPlanItem[];
-  disabled: boolean;
-  states: Record<string, RepairActionState>;
-  onRepair: (item: RepairPlanItem) => void;
-  onReveal: (path: string) => void;
-  onCopyPlan: () => void;
-}) {
-  const autoCount = items.filter((item) => item.kind === "auto").length;
-  const manualCount = items.filter((item) => item.kind === "manual").length;
-  const diagnosticCount = items.filter((item) => item.kind === "diagnostic").length;
-  const hasRepairs = items.length > 0;
-  return (
-    <section className="repair-center" aria-label="Repair center">
-      <div className="repair-center__head">
-        <div className="repair-center__copy">
-          <span className="repair-center__eyebrow">Repair center</span>
-          <span className="repair-center__title">
-            {hasRepairs ? "Actions for this report" : "No repair actions needed"}
-          </span>
-        </div>
-        <div className="repair-center__stats" aria-label="Repair action counts">
-          <span className="repair-chip repair-chip--auto">Auto {autoCount}</span>
-          <span className="repair-chip repair-chip--manual">Manual {manualCount}</span>
-          <span className="repair-chip repair-chip--diagnostic">Diag {diagnosticCount}</span>
-        </div>
-        <button
-          type="button"
-          className="btn btn--ghost repair-center__copy-plan"
-          onClick={onCopyPlan}
-        >
-          Copy plan
-        </button>
-      </div>
-      {hasRepairs && (
-        <div className="repair-center__list">
-          {items.map((item) => {
-            const state = states[item.id];
-            const running = state?.status === "running";
-            return (
-              <div
-                className={`repair-item repair-item--${item.kind} repair-item--${item.verdict.toLowerCase()}`}
-                key={item.id}
-              >
-                <span className="repair-item__bar" aria-hidden="true" />
-                <div className="repair-item__body">
-                  <div className="repair-item__topline">
-                    <span className="repair-item__title">{item.title}</span>
-                    <span className="repair-item__meta">
-                      {item.verdict.toLowerCase()} · {item.findingCount}
-                    </span>
-                  </div>
-                  <span className="repair-item__detail">{item.detail}</span>
-                  {item.flags.length > 0 && (
-                    <span className="repair-item__flags">{previewList(item.flags)}</span>
-                  )}
-                  {state && (
-                    <span className={`repair-item__state repair-item__state--${state.status}`}>
-                      {state.message}
-                    </span>
-                  )}
-                </div>
-                <div className="repair-item__actions">
-                  {item.kind === "auto" && (
-                    <button
-                      type="button"
-                      className="btn btn--primary repair-item__button"
-                      disabled={disabled || running}
-                      onClick={() => onRepair(item)}
-                    >
-                      {running ? "Repairing…" : "Repair"}
-                    </button>
-                  )}
-                  {item.evidencePath && (
-                    <button
-                      type="button"
-                      className="btn btn--ghost repair-item__button"
-                      disabled={disabled || running}
-                      onClick={() => onReveal(item.evidencePath as string)}
-                    >
-                      Reveal
-                    </button>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </section>
-  );
-}
-
-/* ——————————————————————————————————————————————————————————— */
-
 function Summary({
   phase,
   report,
@@ -1392,7 +953,6 @@ function Workarea({
   onScan,
   counts,
   surfaceCounts,
-  onToast,
 }: {
   phase: Phase;
   findings: ScanFinding[];
@@ -1414,7 +974,6 @@ function Workarea({
     runtime: number;
     files: number;
   };
-  onToast: (toast: Toast) => void;
 }) {
   const chips: { key: Filter; label: string; modifier: string; count: number }[] = [
     { key: "all", label: "All", modifier: "", count: counts.total },
@@ -1545,7 +1104,6 @@ function Workarea({
                       finding={f}
                       open={openKey === key}
                       onToggle={onToggle}
-                      onToast={onToast}
                     />
                   );
                 })}
@@ -1661,7 +1219,6 @@ type FindingRowProps = {
   finding: ScanFinding;
   open: boolean;
   onToggle: (key: string) => void;
-  onToast: (toast: Toast) => void;
 };
 
 const FindingRow = memo(function FindingRow({
@@ -1669,7 +1226,6 @@ const FindingRow = memo(function FindingRow({
   finding: f,
   open,
   onToggle,
-  onToast,
 }: FindingRowProps) {
   const cls = `row row--${f.verdict.toLowerCase()} ${open ? "row--open" : ""}`;
   // Verdict glyph supplements color so colorblind users still see severity.
@@ -1703,10 +1259,11 @@ const FindingRow = memo(function FindingRow({
       try {
         await openFindingFolder(folderAction.path);
       } catch (err) {
-        onToast({ msg: `Could not reveal evidence: ${errorMessage(err)}`, kind: "error" });
+        // eslint-disable-next-line no-console
+        console.error("Open folder failed:", err);
       }
     },
-    [folderAction, onToast],
+    [folderAction],
   );
   const handleKey = useCallback(
     (e: ReactKeyboardEvent) => {
@@ -1843,7 +1400,6 @@ async function openFindingFolder(path: string): Promise<void> {
 
 function FindingDetails({ finding }: { finding: ScanFinding }) {
   const [copied, setCopied] = useState(false);
-  const [copyError, setCopyError] = useState<string | null>(null);
   const details = finding.details;
   const parsed = useMemo(
     () => (details ? parseFindingDetails(details) : null),
@@ -1856,18 +1412,17 @@ function FindingDetails({ finding }: { finding: ScanFinding }) {
       if (!copyText) return;
       try {
         await navigator.clipboard.writeText(copyText);
-        setCopyError(null);
         setCopied(true);
         window.setTimeout(() => setCopied(false), 1600);
       } catch (err) {
-        setCopyError(errorMessage(err));
+        // eslint-disable-next-line no-console
+        console.error("Copy evidence failed:", err);
       }
     },
     [details, finding.description],
   );
   const copyButton = (
     <div className="row__details-toolbar">
-      {copyError && <span className="row__copy-error">{copyError}</span>}
       <button
         type="button"
         className="row__copy-btn"

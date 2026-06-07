@@ -23,7 +23,7 @@ fn is_known_suspicious_flag_key(key: &str) -> bool {
     get_flag_category(key).is_some() || !matches!(get_flag_severity(key), ScanVerdict::Clean)
 }
 
-pub(crate) fn should_check_flag_key(key: &str) -> bool {
+fn should_check_flag_key(key: &str) -> bool {
     looks_like_fflag_key(key) || is_known_suspicious_flag_key(key)
 }
 
