@@ -452,7 +452,7 @@ function AppInner() {
   return (
     <div className="app">
       {!tauriReady && (
-        <div className="toast toast--error" style={{ position: "static", margin: "12px 16px 0" }}>
+        <div className="toast toast--error app__runtime-warning">
           Tauri runtime not detected. Launch the installed app or run{" "}
           <code>npm run tauri dev</code> — the plain Vite dev server can't reach the backend.
         </div>
