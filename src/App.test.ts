@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ScanFinding } from "./types";
 import {
+  buildRepairPlan,
   emptyProgress,
+  errorMessage,
+  extractFindingFlagName,
   findingKey,
+  formatRepairPlanText,
   formatAccountLabel,
   groupByVerdict,
   hasTauriRuntime,
@@ -170,6 +174,87 @@ describe("App UI helpers", () => {
       path: "C:\\Windows\\Prefetch\\TOOL.EXE-123.pf",
       title: "Reveal evidence in folder: C:\\Windows\\Prefetch\\TOOL.EXE-123.pf",
     });
+  });
+
+  it("extracts quoted FFlag names from scanner descriptions", () => {
+    expect(
+      extractFindingFlagName('Critical FFlag detected: "DFIntS2PhysicsSenderRate" = 1'),
+    ).toBe("DFIntS2PhysicsSenderRate");
+    expect(extractFindingFlagName("ClientAppSettings.json file exists")).toBe(null);
+  });
+
+  it("groups client-settings findings into one auto repair plan per file", () => {
+    const plan = buildRepairPlan([
+      finding("Flagged", {
+        module: "client_settings_scanner",
+        description: 'Critical FFlag detected: "DFIntS2PhysicsSenderRate" = 1',
+        details: "Path: C:\\Users\\<user>\\Roblox\\ClientSettings\\ClientAppSettings.json | Category: DESYNC",
+      }),
+      finding("Suspicious", {
+        module: "client_settings_scanner",
+        description:
+          'Suspicious FFlag detected: "DFIntCullFactorPixelThresholdMainViewHighQuality" = 10000',
+        details: "Path: C:\\Users\\<user>\\Roblox\\ClientSettings\\ClientAppSettings.json | Category: VISUAL",
+      }),
+    ]);
+
+    expect(plan).toHaveLength(1);
+    expect(plan[0]).toMatchObject({
+      kind: "auto",
+      verdict: "Flagged",
+      title: "Repair FFlag settings",
+      evidencePath:
+        "C:\\Users\\<user>\\Roblox\\ClientSettings\\ClientAppSettings.json",
+      findingCount: 2,
+    });
+    expect(plan[0].flags).toEqual([
+      "DFIntCullFactorPixelThresholdMainViewHighQuality",
+      "DFIntS2PhysicsSenderRate",
+    ]);
+  });
+
+  it("keeps prefetch and inconclusive findings out of auto repair", () => {
+    const plan = buildRepairPlan([
+      finding("Suspicious", {
+        module: "prefetch_scanner",
+        description: "Known tool execution history found",
+        details: "Prefetch file: C:\\Windows\\Prefetch\\TOOL.EXE-123.pf, Last modified: today",
+      }),
+      finding("Inconclusive", {
+        module: "client_settings_scanner",
+        description: "Could not read ClientAppSettings.json: Access denied",
+        details: "Path: C:\\Roblox\\ClientSettings\\ClientAppSettings.json",
+      }),
+    ]);
+
+    expect(plan.map((item) => item.kind)).toEqual(["diagnostic", "diagnostic"]);
+    expect(plan.some((item) => item.kind === "auto")).toBe(false);
+  });
+
+  it("formats repair plan copy text", () => {
+    const text = formatRepairPlanText([
+      {
+        id: "auto|path",
+        kind: "auto",
+        verdict: "Flagged",
+        module: "client_settings_scanner",
+        title: "Repair FFlag settings",
+        detail: "Back up and clean 1 override in C:\\x.json.",
+        evidencePath: "C:\\x.json",
+        flags: ["DFIntS2PhysicsSenderRate"],
+        findingCount: 1,
+      },
+    ]);
+
+    expect(text).toContain("Prism repair plan");
+    expect(text).toContain("[Flagged / auto-repairable]");
+    expect(text).toContain("DFIntS2PhysicsSenderRate");
+  });
+
+  it("formats non-Error failures without losing message fields", () => {
+    expect(errorMessage("plain failure")).toBe("plain failure");
+    expect(errorMessage({ message: "structured failure" })).toBe("structured failure");
+    expect(errorMessage({ code: "E_FAIL" })).toBe('{"code":"E_FAIL"}');
   });
 
   it("formats verified account labels", () => {
